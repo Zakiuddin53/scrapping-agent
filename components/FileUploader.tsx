@@ -20,11 +20,11 @@ const PdfColor = {
 
 export default function FileUpload({
   onFileUpload,
-  setParsedText,
+  setParsedData,
   maxSize,
 }: {
   onFileUpload: (file: File) => void;
-  setParsedText: (text: string) => void;
+  setParsedData: (data: { fileName: string; rawText: string; jsonData: Record<string, any> }) => void;
   maxSize: number;
 }) {
   const [filesToUpload, setFilesToUpload] = useState<FileUploadProgress[]>([]);
@@ -61,8 +61,8 @@ export default function FileUpload({
         throw new Error("Failed to upload file");
       }
 
-      const parsedText = await response.text();
-      setParsedText(parsedText);
+      const data = await response.json();
+      setParsedData(data);
     } catch (error) {
       toast({
         variant: "destructive",
