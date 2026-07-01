@@ -178,7 +178,6 @@ The user should be able to upload an insurance payment PDF.
 
 ### States
 
-- Idle
 - Uploading
 - Processing
 - Success
