@@ -6,14 +6,14 @@
 
 # Version
 
-| Field      | Value                                 |
-| ---------- | ------------------------------------- |
-| Product    | AI Payment Posting Assistant          |
-| Version    | 1.0                                   |
-| Phase      | Phase 1 (Prototype)                   |
-| Author     | Zaki Uddin                            |
-| Tech Stack | Next.js, NestJS, AI (LLM), PDF Parser |
-| Status     | Draft                                 |
+| Field      | Value                        |
+| ---------- | ---------------------------- |
+| Product    | AI Payment Posting Assistant |
+| Version    | 1.0                          |
+| Phase      | Phase 1 (Prototype)          |
+| Author     | Zaki Uddin                   |
+| Tech Stack | Next.js,AI (LLM), PDF Parser |
+| Status     | Draft                        |
 
 ---
 
@@ -464,18 +464,6 @@ Populate Form
 - TanStack Query
 - Axios
 - Mantine Form
-
----
-
-## Backend
-
-- NestJS
-- Multer
-- PDF Parsing Library
-- OpenAI GPT-5 / Gemini
-- Zod Validation
-
----
 
 # 17. Error Handling
 
