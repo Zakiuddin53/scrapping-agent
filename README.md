@@ -31,7 +31,7 @@ To get started with the project, follow these steps:
 
 1. **Clone the repository**:
     ```bash
-      git clone https://github.com/ishaangupta-YB/nextjs-pdf-parser.git
+      git clone https://github.com/eshantgupta/nextjs-pdf-parser.git
       cd nextjs-pdf-parser
     ```
 
@@ -124,16 +124,12 @@ const Home = () => {
 
 ## Authors
 
-- [@ishaangupta-yb](https://www.github.com/ishaangupta-yb)
+- [@eshantgupta](https://www.github.com/eshantgupta)
 
 ## Contributing
 
 Contributions are always welcome!
 
-## License 📄
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 ---
 
-Made with ❤️ by [ishaangupta-YB](https://github.com/ishaangupta-YB).
+Made with ❤️ by [Eshant Gupta](https://github.com/eshantgupta).
