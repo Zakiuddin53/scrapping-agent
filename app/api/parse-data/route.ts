@@ -91,49 +91,69 @@ function convertTextToJson(text: string): Record<string, any> {
   const procedures: any[] = [];
   const billingKeys: Record<string, string> = {};
 
-  // Regex definitions
-  const amountRegex = /\-?\$?\b\d{1,3}(?:,\d{3})*(?:\.\d{2})\b/g;
+  // Flexible amount regex matching integer values ($250, $ 450) and standard decimal values (120.00, 0.50)
+  const amountRegex = /(?:(?:\-\s*)?\$[-+]?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?)|(?:\b\-?\d{1,3}(?:,\d{3})*\.\d{2}\b)/g;
   const dateRegex = /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/;
   const cptRegex = /\b(?:\d{5}|[A-Z]\d{4})\b/i;
 
+  let lastSeenDate = "";
+  let lastSeenCpt = "";
+  let lastSeenDateLine = -10;
+  let lastSeenCptLine = -10;
+
+  const cleanLines: string[] = [];
   for (let line of lines) {
     line = line.trim();
     if (!line) continue;
-
-    // Check for typical noisy parser lines (PDF header/footer page count etc.)
     if (/^page\s+\d+$/i.test(line) || line.includes("pdfParser_data") || line.length < 3) {
       continue;
     }
+    cleanLines.push(line);
+  }
 
+  for (let i = 0; i < cleanLines.length; i++) {
+    const line = cleanLines[i];
     const lowerLine = line.toLowerCase();
 
-    // 1. Extract metadata (Patient, Provider, Date, Claim)
+    // Track dates and CPT codes lookback history
+    const dateMatch = line.match(dateRegex);
+    if (dateMatch) {
+      lastSeenDate = dateMatch[0];
+      lastSeenDateLine = i;
+    }
+    const cptMatch = line.match(cptRegex);
+    if (cptMatch) {
+      lastSeenCpt = cptMatch[0];
+      lastSeenCptLine = i;
+    }
+
+    // 1. Extract metadata
     if (!patientName) {
-      const match = line.match(/(?:patient|member|insured|subscriber)(?:\s+name)?\s*[:\-\=]\s*([a-zA-Z\s,\.]+)/i);
+      const match = line.match(/(?:patient|member|insured|subscriber|recipient)(?:\s+name)?\s*[:\-\=\|\s]\s*([a-zA-Z\s,\.]+)/i);
       if (match && match[1]) {
         const val = match[1].trim();
-        if (val.length > 2 && val.length < 50 && !val.toLowerCase().includes("id") && !val.toLowerCase().includes("number")) {
+        if (val.length > 2 && val.length < 50 && !/id|number|no\b|code/i.test(val)) {
           patientName = val;
         }
       }
     }
 
     if (!providerName) {
-      const match = line.match(/(?:provider|facility|doctor|physician|clinic|hospital|billing\s+entity)\s*[:\-\=]\s*([a-zA-Z0-9\s,\.\&]+)/i);
+      const match = line.match(/(?:provider|facility|doctor|physician|clinic|hospital|billing\s+entity|vendor|payee)\s*[:\-\=\|\s]\s*([a-zA-Z0-9\s,\.\&\#\-]+)/i);
       if (match && match[1]) {
         const val = match[1].trim();
-        if (val.length > 2 && val.length < 60 && !val.toLowerCase().includes("date") && !val.toLowerCase().includes("tax")) {
+        if (val.length > 2 && val.length < 60 && !/date|tax|npi|phone/i.test(val)) {
           providerName = val;
         }
       }
     }
 
     if (!invoiceDate) {
-      const match = line.match(/(?:statement|invoice|billing|claim|service)\s*date\s*[:\-\=]\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+      const match = line.match(/(?:statement|invoice|billing|claim|service|dos)\s*date\s*[:\-\=\|\s]\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
       if (match && match[1]) {
         invoiceDate = match[1].trim();
       } else {
-        const match2 = line.match(/\b(?:date)\b\s*[:\-\=]\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+        const match2 = line.match(/\b(?:date)\b\s*[:\-\=\|\s]\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
         if (match2 && match2[1]) {
           invoiceDate = match2[1].trim();
         }
@@ -141,13 +161,13 @@ function convertTextToJson(text: string): Record<string, any> {
     }
 
     if (!claimNumber) {
-      const match = line.match(/(?:claim|invoice|account|bill|statement|reference)\s*(?:id|number|num|ref|\#)\s*[:\-\=]\s*([a-zA-Z0-9\-]+)/i);
+      const match = line.match(/(?:claim|invoice|account|bill|statement|reference|authorization)\s*(?:id|number|num|ref|\#)?\s*[:\-\=\|\s]\s*([a-zA-Z0-9\-]+)/i);
       if (match && match[1]) {
         claimNumber = match[1].trim();
       }
     }
 
-    // 2. Parse general billing key-value lines
+    // 2. Parse billing key-value lines
     const colonIndex = line.indexOf(":");
     if (colonIndex > 0 && colonIndex < line.length - 1) {
       const key = line.substring(0, colonIndex).trim();
@@ -159,7 +179,7 @@ function convertTextToJson(text: string): Record<string, any> {
       if (isBillingKey && valAmounts && valAmounts.length > 0 && key.length < 55) {
         billingKeys[key] = val;
 
-        const amt = parseFloat(valAmounts[0].replace(/[\$,]/g, ""));
+        const amt = parseFloat(valAmounts[0].replace(/[\$,\s]/g, ""));
         if (/billed|charge|total\s+amount/i.test(key) && !/paid|patient/i.test(key)) {
           totalBilled = Math.max(totalBilled, amt);
         } else if (/paid|settled|payment|reimburse/i.test(key)) {
@@ -172,74 +192,136 @@ function convertTextToJson(text: string): Record<string, any> {
       }
     }
 
-    // 3. Scan for procedure table lines
+    // 3. Scan for procedure lines
     const lineAmounts = line.match(amountRegex);
-    const dateMatch = line.match(dateRegex);
-    const cptMatch = line.match(cptRegex);
 
-    if (lineAmounts && lineAmounts.length > 0 && (dateMatch || cptMatch || /cpt|hcpcs|procedure|code|service/i.test(line))) {
-      const dateVal = dateMatch ? dateMatch[0] : "";
-      const cptVal = cptMatch ? cptMatch[0] : "";
+    if (lineAmounts && lineAmounts.length > 0) {
+      const hasDate = !!dateMatch;
+      const hasCpt = !!cptMatch;
+      const isNearDate = (i - lastSeenDateLine) <= 3;
+      const isNearCpt = (i - lastSeenCptLine) <= 3;
+      
+      const isProcedureLine = hasDate || hasCpt || isNearDate || isNearCpt || 
+        /cpt|hcpcs|procedure|code|service|office|visit|therapy|eval|mod|lab/i.test(line);
 
-      // Reconstruct description
-      let description = line;
-      if (dateVal) description = description.replace(dateVal, "");
-      if (cptVal) description = description.replace(cptVal, "");
-      lineAmounts.forEach(amt => {
-        description = description.replace(amt, "");
-      });
-      description = description.replace(/[\:\-\=\,\$\(\)\/]/g, "").replace(/\s+/g, " ").trim();
-      if (description.length > 80) {
-        description = description.substring(0, 80) + "...";
-      }
+      const isSummaryLine = /total|summary|grand|balance|due|patient\s+pays/i.test(line);
 
-      // Parse amounts on the line
-      let billed = "$0.00";
-      let settled = "$0.00";
-      let disputed = "$0.00";
+      if (isProcedureLine && !isSummaryLine) {
+        const dateVal = dateMatch ? dateMatch[0] : (isNearDate ? lastSeenDate : "");
+        const cptVal = cptMatch ? cptMatch[0] : (isNearCpt ? lastSeenCpt : "");
 
-      const parsedAmts = lineAmounts.map(val => parseFloat(val.replace(/[\$,]/g, "")));
-
-      if (parsedAmts.length === 1) {
-        if (/paid|settled|payment/i.test(line)) {
-          settled = `$${parsedAmts[0].toFixed(2)}`;
-        } else {
-          billed = `$${parsedAmts[0].toFixed(2)}`;
+        let description = line;
+        if (dateMatch && dateMatch[0]) description = description.replace(dateMatch[0], "");
+        if (cptMatch && cptMatch[0]) description = description.replace(cptMatch[0], "");
+        lineAmounts.forEach(amt => {
+          description = description.replace(amt, "");
+        });
+        description = description.replace(/[\:\-\=\,\$\(\)\/]/g, "").replace(/\s+/g, " ").trim();
+        if (description.length > 80) {
+          description = description.substring(0, 80) + "...";
         }
-      } else if (parsedAmts.length === 2) {
-        billed = `$${parsedAmts[0].toFixed(2)}`;
-        settled = `$${parsedAmts[1].toFixed(2)}`;
-        const diff = Math.max(0, parsedAmts[0] - parsedAmts[1]);
-        disputed = `$${diff.toFixed(2)}`;
-      } else if (parsedAmts.length >= 3) {
-        billed = `$${parsedAmts[0].toFixed(2)}`;
-        settled = `$${parsedAmts[1].toFixed(2)}`;
-        disputed = `$${parsedAmts[2].toFixed(2)}`;
-      }
+        if (!description) description = "Medical Procedure / Service";
 
-      procedures.push({
-        dateOfService: dateVal || undefined,
-        cptCode: cptVal || undefined,
-        description: description || "Medical Procedure",
-        billedAmount: billed,
-        settledAmount: settled,
-        disputedAmount: disputed
+        let billed = "$0.00";
+        let settled = "$0.00";
+        let disputed = "$0.00";
+
+        const parsedAmts = lineAmounts.map(val => parseFloat(val.replace(/[\$,\s]/g, "")));
+
+        if (parsedAmts.length === 1) {
+          if (/paid|settled|payment/i.test(line)) {
+            settled = `$${parsedAmts[0].toFixed(2)}`;
+          } else {
+            billed = `$${parsedAmts[0].toFixed(2)}`;
+          }
+        } else if (parsedAmts.length === 2) {
+          billed = `$${parsedAmts[0].toFixed(2)}`;
+          settled = `$${parsedAmts[1].toFixed(2)}`;
+          const diff = Math.max(0, parsedAmts[0] - parsedAmts[1]);
+          disputed = `$${diff.toFixed(2)}`;
+        } else if (parsedAmts.length >= 3) {
+          billed = `$${parsedAmts[0].toFixed(2)}`;
+          settled = `$${parsedAmts[1].toFixed(2)}`;
+          disputed = `$${parsedAmts[2].toFixed(2)}`;
+        }
+
+        procedures.push({
+          dateOfService: dateVal || undefined,
+          cptCode: cptVal || undefined,
+          description,
+          billedAmount: billed,
+          settledAmount: settled,
+          disputedAmount: disputed
+        });
+      }
+    }
+  }
+
+  // Fallbacks if no procedures or explicit totals were found
+  const allAmounts: number[] = [];
+  for (const line of cleanLines) {
+    const lineAmts = line.match(amountRegex);
+    if (lineAmts) {
+      lineAmts.forEach(val => {
+        const parsed = parseFloat(val.replace(/[\$,\s]/g, ""));
+        if (!isNaN(parsed) && parsed > 0 && parsed < 100000) {
+          allAmounts.push(parsed);
+        }
       });
     }
   }
 
-  // Calculate totals if they were not explicitly extracted
-  if (totalBilled === 0 && procedures.length > 0) {
-    totalBilled = procedures.reduce((sum, item) => sum + parseFloat(item.billedAmount.replace(/[\$,]/g, "")), 0);
-  }
-  if (totalPaid === 0 && procedures.length > 0) {
-    totalPaid = procedures.reduce((sum, item) => sum + parseFloat(item.settledAmount.replace(/[\$,]/g, "")), 0);
-  }
-  if (totalDisputed === 0 && procedures.length > 0) {
-    totalDisputed = procedures.reduce((sum, item) => sum + parseFloat(item.disputedAmount.replace(/[\$,]/g, "")), 0);
+  allAmounts.sort((a, b) => b - a);
+
+  if (totalBilled === 0) {
+    if (procedures.length > 0) {
+      totalBilled = procedures.reduce((sum, item) => sum + parseFloat(item.billedAmount.replace(/[\$,\s]/g, "")), 0);
+    } else if (allAmounts.length > 0) {
+      totalBilled = allAmounts[0];
+    }
   }
 
-  // Build the clean JSON structure
+  if (totalPaid === 0) {
+    if (procedures.length > 0) {
+      totalPaid = procedures.reduce((sum, item) => sum + parseFloat(item.settledAmount.replace(/[\$,\s]/g, "")), 0);
+    } else if (allAmounts.length > 1) {
+      totalPaid = allAmounts[1];
+    }
+  }
+
+  if (totalDisputed === 0) {
+    if (procedures.length > 0) {
+      totalDisputed = procedures.reduce((sum, item) => sum + parseFloat(item.disputedAmount.replace(/[\$,\s]/g, "")), 0);
+    } else if (totalBilled > totalPaid) {
+      totalDisputed = totalBilled - totalPaid;
+    }
+  }
+
+  // Name fallback
+  if (!patientName && cleanLines.length > 0) {
+    for (let j = 0; j < Math.min(5, cleanLines.length); j++) {
+      const line = cleanLines[j];
+      if (/name\s*[:\-\=\|]/i.test(line)) {
+        const parts = line.split(/[:\-\=\|]/);
+        if (parts[1] && parts[1].trim().length > 2 && parts[1].trim().length < 40) {
+          patientName = parts[1].trim();
+          break;
+        }
+      }
+    }
+  }
+
+  // Billing Date fallback
+  if (!invoiceDate) {
+    for (const line of cleanLines) {
+      const match = line.match(dateRegex);
+      if (match) {
+        invoiceDate = match[0];
+        break;
+      }
+    }
+  }
+
   const summary: Record<string, string> = {
     "Total Billed": `$${totalBilled.toFixed(2)}`,
     "Total Settled": `$${totalPaid.toFixed(2)}`,
@@ -248,35 +330,35 @@ function convertTextToJson(text: string): Record<string, any> {
   };
 
   const result: Record<string, any> = {};
-  if (patientName) result["Patient Name"] = patientName;
-  if (providerName) result["Provider/Facility"] = providerName;
-  if (invoiceDate) result["Billing Date"] = invoiceDate;
-  if (claimNumber) result["Claim/Invoice Number"] = claimNumber;
+  result["Patient Name"] = patientName || "Not Identified";
+  result["Provider/Facility"] = providerName || "Not Identified";
+  result["Billing Date"] = invoiceDate || "Not Identified";
+  result["Claim/Invoice Number"] = claimNumber || "Not Identified";
   
   result["Financial Summary"] = summary;
   
   if (procedures.length > 0) {
     result["Procedures Detail"] = procedures;
-  }
-
-  // Final fallback in case PDF text extraction was completely unstructured (empty result)
-  if (Object.keys(result).length <= 1 && procedures.length === 0) {
-    let lineNum = 0;
-    for (let line of lines) {
-      line = line.trim();
-      if (!line || line.length < 5 || /^page\s+\d+$/i.test(line)) continue;
-      
-      const colonIndex = line.indexOf(":");
-      if (colonIndex > 0 && colonIndex < line.length - 1) {
-        const key = line.substring(0, colonIndex).trim();
-        const value = line.substring(colonIndex + 1).trim();
-        if (/^[a-zA-Z0-9_\s-\(\)\/]+$/.test(key) && key.length < 50) {
-          result[key] = value;
-        }
-      } else {
-        lineNum++;
-        result[`item_${lineNum}`] = line;
+  } else {
+    // Simulated procedures fallback (lines with numbers)
+    const simulatedProcedures: any[] = [];
+    for (const line of cleanLines) {
+      const amts = line.match(amountRegex);
+      if (amts && amts.length > 0 && !/total|summary|grand|balance/i.test(line)) {
+        let desc = line;
+        amts.forEach(a => { desc = desc.replace(a, ""); });
+        desc = desc.replace(/[\:\-\=\,\$\(\)\/]/g, "").replace(/\s+/g, " ").trim();
+        
+        simulatedProcedures.push({
+          description: desc || "Document Item",
+          billedAmount: amts[0] || "$0.00",
+          settledAmount: amts[1] || "$0.00",
+          disputedAmount: amts[2] || "$0.00"
+        });
       }
+    }
+    if (simulatedProcedures.length > 0) {
+      result["Procedures Detail"] = simulatedProcedures;
     }
   }
 
